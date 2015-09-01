@@ -16,12 +16,17 @@
  *)
 
 open Lwt
+open Lwt_preemptive
+
+external sendfile: Unix.file_descr -> Unix.file_descr -> int64 -> int64 = "stub_sendfile64"
+
 
 type t = {
   really_read: Cstruct.t -> unit Lwt.t;
   really_write: Cstruct.t -> unit Lwt.t;
   offset: int64 ref;
   skip: int64 -> unit Lwt.t;
+  copy_from: Lwt_unix.file_descr -> int64 -> int64 Lwt.t;
   close: unit -> unit Lwt.t
 }
 
@@ -38,8 +43,17 @@ let of_raw_fd fd =
     offset := Int64.(add !offset (of_int (Cstruct.len buf)));
     return () in
   let skip _ = fail Impossible_to_seek in
+  let copy_from from_fd len =
+    let from_fd = Lwt_unix.unix_file_descr from_fd in
+    let fd = Lwt_unix.unix_file_descr fd in
+    Printf.fprintf stderr "sendfile offset=%Ld len=%Ld\n%!" !offset len;
+    detach (sendfile from_fd fd) len
+    >>= fun len' ->
+    Printf.fprintf stderr "                written %Ld\n%!" len';
+    offset := Int64.(add !offset len');
+    return len' in
   let close () = Lwt_unix.close fd in
-  return { really_read; really_write; offset; skip; close }
+  return { really_read; really_write; offset; skip; copy_from; close }
 
 let of_seekable_fd fd =
   of_raw_fd fd >>= fun c ->
@@ -65,8 +79,18 @@ let of_ssl_fd fd =
     offset := Int64.(add !offset (of_int (Cstruct.len buf)));
     return () in
   let skip _ = fail Impossible_to_seek in
+  let copy_from from_fd len =
+    let from_fd = Lwt_unix.unix_file_descr from_fd in
+    let fd = Lwt_unix.unix_file_descr fd in
+    Printf.fprintf stderr "sendfile offset=%Ld len=%Ld\n%!" !offset len;
+    detach (sendfile from_fd fd) len
+    >>= fun len' ->
+    Printf.fprintf stderr "                written %Ld\n%!" len';
+    offset := Int64.(add !offset len');
+    return len' in
+
   let close () =
     Lwt_ssl.close sock in
-  return { really_read; really_write; offset; skip; close }
+  return { really_read; really_write; offset; skip; copy_from; close }
 
 
